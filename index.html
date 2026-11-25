@@ -46,7 +46,7 @@ tr.click{cursor:pointer}tr.click:hover{background:var(--sea)}
 .report{line-height:1.7}.report h1{font-size:24px}.report h2{font-size:18px}
 .hide{display:none!important}
 @media print{header,nav,.bar,.noprint{display:none!important}body{background:#fff;color:#000}.card{border:0}th{position:static}}
-@media(max-width:600px){table{font-size:13px}.hb{grid-template-columns:5em 1fr 5em}}
+@media(max-width:600px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.k{padding:10px}.k .v{font-size:clamp(17px,5vw,24px)}table{font-size:13px}.hb{grid-template-columns:5em 1fr 5em}}
 @media(prefers-reduced-motion:no-preference){.hb .t i{transition:width .4s}}
 </style>
 </head>
@@ -91,6 +91,9 @@ const chg=(a,b)=>b?(a-b)/Math.abs(b):null;
 const cls=v=>v==null?'':v>=0?'up':'dn';
 const tz='America/Guayaquil';
 const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:tz});
+const localHour=()=>Number(new Intl.DateTimeFormat('en-GB',{timeZone:tz,hour:'2-digit',hourCycle:'h23'}).format(new Date()));
+const hourlyTotal=(rows,day,cutoff)=>rows.filter(r=>r.day===day&&Number(r.hour)<cutoff).reduce((sum,r)=>sum+(num(r.net_sales)||0),0);
+const restockMatches=(row,query)=>[row.name_zh,row.name_es,row.name_sys,row.code7,row.barcode].some(value=>String(value||'').toLocaleLowerCase().includes(query.toLocaleLowerCase()));
 const addD=(d,n)=>{const x=new Date(d+'T12:00:00');x.setDate(x.getDate()+n);return x.toISOString().slice(0,10)};
 const name=p=>[p.name_zh,p.name_es||p.name_sys].filter((v,i,a)=>v&&a.indexOf(v)===i).join(' / ');
 const productName=p=>`${p.name_zh?esc(p.name_zh):esc('商品 '+p.code7)}<div class="mute">${esc(p.name_es||p.name_sys||'')}</div>`;
@@ -130,13 +133,17 @@ R.overview=async()=>{const el=$('#v-overview');const t=today();
   <div class="kpis" id="kp1"></div><h2>所选区间</h2><div class="kpis" id="kp2"></div>
   <div class="card"><b>每日净营业额</b> <span class="mute">（品红点为周末）</span><div class="fig" id="trend"></div></div>
   <div class="card"><b>每小时销售</b> <select id="hday"></select><div id="hours"></div></div>`;
-  const daily=await all(()=>sb.from('v_daily_full').select('day,invoices,gross_sales,returns_amount,returns_count,net_sales,net_sales_ex_tax,avg_ticket,units_sold,dow').order('day'));
+  const cutoffHour=localHour(),cutoffLabel=String(cutoffHour).padStart(2,'0')+':00',yesterday=addD(t,-1);
+  const [daily,comparisonHours]=await Promise.all([
+    all(()=>sb.from('v_daily_full').select('day,invoices,gross_sales,returns_amount,returns_count,net_sales,net_sales_ex_tax,avg_ticket,units_sold,dow').order('day')),
+    all(()=>sb.from('v_hourly').select('day,hour,net_sales').gte('day',yesterday).lte('day',t).lt('hour',cutoffHour).order('day').order('hour'))]);
+  const todayAtCutoff=hourlyTotal(comparisonHours,t,cutoffHour),yesterdayAtCutoff=hourlyTotal(comparisonHours,yesterday,cutoffHour),sameHourChange=chg(todayAtCutoff,yesterdayAtCutoff);
   const by=Object.fromEntries(daily.map(d=>[d.day,d]));const S=k=>d=>num(d?.[k])||0;
   const sum=(a,b,k)=>daily.filter(d=>d.day>=a&&d.day<=b).reduce((s,d)=>s+S(k)(d),0);
   const mon=addD(t,-((new Date(t+'T12:00:00').getDay()+6)%7)),m1=t.slice(0,8)+'01',y=addD(t,-1),lw=addD(t,-7);
   const card=(l,v,d,extra='')=>`<div class="k"><div class="l">${l}</div><div class="v">${v}</div><div class="d">${d||''}${extra}</div></div>`;
   $('#kp1').innerHTML=[
-    card('今日营业额',usd(S('net_sales')(by[t])),`<span class="${cls(chg(S('net_sales')(by[t]),S('net_sales')(by[y])))}">较昨日 ${pct(chg(S('net_sales')(by[t]),S('net_sales')(by[y])))}</span> · 营业中，持续更新`),
+    card('今日营业额',usd(todayAtCutoff),`截至 ${cutoffLabel}<br><span class="${cls(sameHourChange)}">较昨日同一时刻 ${pct(sameHourChange)}</span><br>昨日截至 ${cutoffLabel}：${usd(yesterdayAtCutoff)}`),
     card('昨日营业额',usd(S('net_sales')(by[y])),`<span class="${cls(chg(S('net_sales')(by[y]),S('net_sales')(by[addD(y,-7)])))}">较上周同日 ${pct(chg(S('net_sales')(by[y]),S('net_sales')(by[addD(y,-7)])))}</span>`),
     card('本周营业额',usd(sum(mon,t,'net_sales')),'自周一起'),card('本月营业额',usd(sum(m1,t,'net_sales')),''),
     card('累计营业额',usd(sum('2000-01-01',t,'net_sales')),`自 ${daily[0]?.day||'—'} 起`)].join('');
@@ -171,12 +178,14 @@ R.products=async()=>{const el=$('#v-products');
 
 // ---------- 3 智能补货 ----------
 R.restock=async()=>{const el=$('#v-restock');
-  el.innerHTML=`<h1>智能补货 · 销量参考</h1><p class="mute">按近7天销量排列，供选品和采购参考。库存尚未完整录入，暂不计算建议补货数量或预计断货日期。</p><div class="bar"><button class="btn" id="rx">导出销量参考表</button><button class="btn" id="rp">打印 / 存为 PDF</button></div><div class="card scroll" id="rt">正在加载…</div>`;
+  el.innerHTML=`<h1>智能补货 · 销量参考</h1><p class="mute">默认显示近7天销量前200名；搜索可查找全部有销量的商品。库存尚未完整录入，暂不计算建议补货数量或预计断货日期。</p><div class="bar"><label>搜索商品（中文 / 西语 / 编码 / 条码）<input type="search" id="rs" placeholder="输入商品名称、编码或条码" style="min-width:min(320px,80vw)"></label><button class="btn" id="rx" disabled>导出全部销量参考表</button><button class="btn" id="rp">打印 / 存为 PDF</button></div><div class="card scroll" id="rt">正在加载…</div>`;
   const rows=await all(()=>sb.from('v_product_stats').select('code7,barcode,name_zh,name_sys,name_es,qty_total,qty_7d').gt('qty_7d',0).order('qty_7d',{ascending:false}).order('code7'));
-  $('#rt').innerHTML=`<p class="mute">共 ${rows.length} 个近7天有销量的商品</p><table><thead><tr><th>编码</th><th>条码</th><th>商品（中文 / 西语）</th><th class="n">累计销量</th><th class="n">近7天销量</th><th class="n">近7天日均销量</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.code7)}</td><td>${esc(r.barcode||'')}</td><td>${productName(r)}</td><td class="n">${int(r.qty_total)}</td><td class="n">${int(r.qty_7d)}</td><td class="n">${(num(r.qty_7d)/7).toFixed(1)}</td></tr>`).join('')}</tbody></table>`;
+  const draw=()=>{const query=$('#rs').value.trim(),matches=query?rows.filter(r=>restockMatches(r,query)):rows,L=matches.slice(0,200);
+    $('#rt').innerHTML=`<p class="mute">${query?`搜索匹配 ${matches.length} 个，显示前 ${L.length} 个`:`显示近7天销量前 ${L.length} 名`} · 全部共 ${rows.length} 个有销量商品 · Excel导出全部商品</p><table><thead><tr><th>编码</th><th>条码</th><th>商品（中文 / 西语）</th><th class="n">累计销量</th><th class="n">近7天销量</th><th class="n">近7天日均销量</th></tr></thead><tbody>${L.map(r=>`<tr><td>${esc(r.code7)}</td><td>${esc(r.barcode||'')}</td><td>${productName(r)}</td><td class="n">${int(r.qty_total)}</td><td class="n">${int(r.qty_7d)}</td><td class="n">${(num(r.qty_7d)/7).toFixed(1)}</td></tr>`).join('')}</tbody></table>${L.length?'':'<p class="mute">未找到匹配商品</p>'}`};
+  $('#rs').addEventListener('input',draw);
   $('#rx').onclick=()=>{const ws=XLSX.utils.json_to_sheet(rows.map(r=>({'七位编码':r.code7,'条码':r.barcode,'中文名称':r.name_zh||('商品 '+r.code7),'西语名称':r.name_es||r.name_sys||'','累计销量':num(r.qty_total),'近7天销量':num(r.qty_7d),'近7天日均销量':Number((num(r.qty_7d)/7).toFixed(1))})));
     const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'销量参考');XLSX.writeFile(wb,`销量参考_${today()}.xlsx`)};
-  $('#rp').onclick=()=>print()};
+  $('#rx').disabled=false;$('#rp').onclick=()=>print();draw()};
 
 // ---------- 4 收银效率 ----------
 R.caja=async()=>{const el=$('#v-caja');const t=today();
@@ -234,14 +243,13 @@ R.report=async()=>{const el=$('#v-report');const {data}=await sb.from('daily_rep
 // ---------- 登录与同步状态 ----------
 async function syncStatus(){
   const jobs=['intraday','daily','manual','backfill'];
-  const [success,latest,automatic]=await Promise.all([
+  const [success,latest]=await Promise.all([
     sb.from('sync_runs').select('finished_at,job').in('job',jobs).eq('ok',true).order('id',{ascending:false}).limit(1),
-    sb.from('sync_runs').select('ok').in('job',jobs).order('id',{ascending:false}).limit(1),
-    sb.from('sync_runs').select('finished_at').in('job',jobs).eq('ok',true).like('message','[schedule]%').order('id',{ascending:false}).limit(1)]);
-  if(success.error||latest.error||automatic.error){$('#sync').textContent='同步状态暂时无法读取';return}
-  const fmt=d=>d?esc(new Date(d).toLocaleString('zh-CN',{timeZone:tz})):'尚无记录';
-  const auto=automatic.data?.[0]?.finished_at;
-  $('#sync').innerHTML=`销售数据更新：${fmt(success.data?.[0]?.finished_at)}${latest.data?.[0]?.ok===false?' · <span style="color:#ff9b9b">最近一次同步失败</span>':''} · ${auto?'最近自动同步：'+fmt(auto):'自动触发待验证'} · 计划每15分钟同步、每天08:00出日报 · <a href="${RUN_URL}" style="color:inherit">查看运行记录</a>`}
+    sb.from('sync_runs').select('ok').in('job',jobs).order('id',{ascending:false}).limit(1)]);
+  if(success.error||latest.error){$('#sync').textContent='最近更新时间暂时无法读取';return}
+  const updated=success.data?.[0]?.finished_at;
+  const time=updated?esc(new Date(updated).toLocaleTimeString('zh-CN',{timeZone:tz,hour:'2-digit',minute:'2-digit',hourCycle:'h23'})):'暂无记录';
+  $('#sync').innerHTML=`最近更新 ${time}${latest.data?.[0]?.ok===false?' · <span style="color:#ff9b9b">最近一次同步失败</span>':''} · <a href="${RUN_URL}" style="color:inherit">查看运行记录</a>`}
 async function start(){$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#out').classList.remove('hide');syncStatus();setInterval(syncStatus,300000);show(location.hash.slice(1))}
 $('#lf').addEventListener('submit',async e=>{e.preventDefault();$('#le').textContent='';const {error}=await sb.auth.signInWithPassword({email:$('#em').value.trim(),password:$('#pw').value});if(error)$('#le').textContent='登录失败：'+(error.message.includes('Invalid')?'邮箱或密码错误':error.message);else start()});
 $('#out').onclick=async()=>{await sb.auth.signOut();location.reload()};
