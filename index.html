@@ -95,7 +95,7 @@ const addD=(d,n)=>{const x=new Date(d+'T12:00:00');x.setDate(x.getDate()+n);retu
 const name=p=>[p.name_zh,p.name_es||p.name_sys].filter((v,i,a)=>v&&a.indexOf(v)===i).join(' / ');
 const productName=p=>`${p.name_zh?esc(p.name_zh):'<span class="mute">中文名称待补充</span>'}<div class="mute">${esc(p.name_es||p.name_sys||'')}</div>`;
 const cajaName=v=>String(v).replace(/^CAJA\s*(\d+)$/i,'收银台 $1');
-const paymentName=v=>({'EFECTIVO':'现金','CASH':'现金','TARJETA':'银行卡','TRANSFERENCIA':'转账','CHEQUE':'支票','CREDITO':'赊账','DEBITO':'借记卡'}[String(v).toUpperCase()]||v);
+const paymentName=v=>({'EFECTIVO':'现金','CASH':'现金','TARJETA':'银行卡','TARJETA DE DEBITO':'借记卡','TARJETA DE CREDITO':'信用卡','TRANSFERENCIA':'转账','CHEQUE':'支票','CREDITO':'赊账','DEBITO':'借记卡'}[String(v).toUpperCase()]||v);
 
 async function all(q){let out=[],from=0;for(;;){const {data,error}=await q().range(from,from+999);if(error)throw error;out=out.concat(data);if(data.length<1000)return out;from+=1000}}
 
@@ -208,7 +208,7 @@ R.pay=async()=>{const el=$('#v-pay');const t=today();
 R.anom=async()=>{const el=$('#v-anom');
   el.innerHTML=`<h1>异常监控</h1><p class="mute">以下均为根据系统数据推断的"疑似"问题，每条附判断依据，需要现场核实，不代表员工或供应商责任。</p><div class="card" id="as"></div><div class="bar"><label>类型<select id="ak"></select></label></div><div class="card scroll" id="at"></div>`;
   const [rows,sync,daily]=await Promise.all([all(()=>sb.from('v_anomalies').select('*')),sb.from('sync_runs').select('*').order('id',{ascending:false}).limit(20),sb.from('v_daily_full').select('day,net_sales,dow').order('day',{ascending:false}).limit(15)]);
-  const visibleRows=rows.filter(r=>!/(库存|售罄|断货|进价|售价|毛利|倍率)/.test([r.kind,r.basis].join(' ')));
+  const visibleRows=rows.filter(r=>!/(库存|售罄|断货|进价|售价|毛利|倍率|成本|未到货)/.test([r.kind,r.basis].join(' ')));
   const cnt={};for(const r of visibleRows)cnt[r.kind]=(cnt[r.kind]||0)+1;
   const fails=(sync.data||[]).filter(s=>s.ok===false),d=daily.data||[];const drop=d[1]&&d.slice(2).find(x=>x.dow===d[1].dow);
   const dropMsg=drop&&num(d[1].net_sales)<num(drop.net_sales)*0.7?`<div class="dn">销售突然下降：${esc(d[1].day)} 净营业额 ${usd(d[1].net_sales)}，比上周同日 ${usd(drop.net_sales)} 低 ${((1-d[1].net_sales/drop.net_sales)*100).toFixed(0)}%</div>`:'';
