@@ -173,7 +173,7 @@ R.restock=async()=>{const el=$('#v-restock');
   el.innerHTML=`<h1>智能补货 · 销量参考</h1><p class="mute">按近7天销量排列，供选品和采购参考。库存尚未完整录入，暂不计算建议补货数量或预计断货日期。</p><div class="bar"><button class="btn" id="rx">导出销量参考表</button><button class="btn" id="rp">打印 / 存为 PDF</button></div><div class="card scroll" id="rt">正在加载…</div>`;
   const rows=await all(()=>sb.from('v_product_stats').select('code7,barcode,name_zh,name_sys,name_es,qty_total,qty_7d').gt('qty_7d',0).order('qty_7d',{ascending:false}).order('code7'));
   $('#rt').innerHTML=`<p class="mute">共 ${rows.length} 个近7天有销量的商品</p><table><thead><tr><th>编码</th><th>条码</th><th>商品（中文 / 西语）</th><th class="n">累计销量</th><th class="n">近7天销量</th><th class="n">近7天日均销量</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.code7)}</td><td>${esc(r.barcode||'')}</td><td>${productName(r)}</td><td class="n">${int(r.qty_total)}</td><td class="n">${int(r.qty_7d)}</td><td class="n">${(num(r.qty_7d)/7).toFixed(1)}</td></tr>`).join('')}</tbody></table>`;
-  $('#rx').onclick=()=>{const ws=XLSX.utils.json_to_sheet(rows.map(r=>({'七位编码':r.code7,'条码':r.barcode,'中文名称':r.name_zh||'待补充','西语名称':r.name_es||r.name_sys||'','累计销量':num(r.qty_total),'近7天销量':num(r.qty_7d),'近7天日均销量':Number((num(r.qty_7d)/7).toFixed(1))})));
+  $('#rx').onclick=()=>{const ws=XLSX.utils.json_to_sheet(rows.map(r=>({'七位编码':r.code7,'条码':r.barcode,'中文名称':r.name_zh||('商品 '+r.code7),'西语名称':r.name_es||r.name_sys||'','累计销量':num(r.qty_total),'近7天销量':num(r.qty_7d),'近7天日均销量':Number((num(r.qty_7d)/7).toFixed(1))})));
     const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'销量参考');XLSX.writeFile(wb,`销量参考_${today()}.xlsx`)};
   $('#rp').onclick=()=>print()};
 
