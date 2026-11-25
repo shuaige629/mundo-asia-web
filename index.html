@@ -94,8 +94,10 @@ const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:tz});
 const addD=(d,n)=>{const x=new Date(d+'T12:00:00');x.setDate(x.getDate()+n);return x.toISOString().slice(0,10)};
 const name=p=>[p.name_zh,p.name_es||p.name_sys].filter((v,i,a)=>v&&a.indexOf(v)===i).join(' / ');
 const productName=p=>`${p.name_zh?esc(p.name_zh):esc('商品 '+p.code7)}<div class="mute">${esc(p.name_es||p.name_sys||'')}</div>`;
-const cajaName=v=>String(v).replace(/^CAJA\s*(\d+)$/i,'收银台 $1');
-const paymentName=v=>({'EFECTIVO':'现金','CASH':'现金','TARJETA':'银行卡','TARJETA DE DEBITO':'借记卡','TARJETA DE CREDITO':'信用卡','TRANSFERENCIA':'转账','CHEQUE':'支票','CREDITO':'赊账','DEBITO':'借记卡'}[String(v).toUpperCase()]||v);
+const normalizeLabel=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toUpperCase();
+const isRegister=v=>/^(?:CAJA|收银台)?\s*#?\s*\d+$/i.test(String(v||'').trim());
+const cajaName=v=>isRegister(v)?String(v).replace(/^(?:CAJA|收银台)?\s*#?\s*0*(\d+)$/i,'$1号收银台'):(normalizeLabel(v).replace(/\s/g,'')==='YEWANG'?'老板账号开单':'（后台账号开单）');
+const paymentName=v=>({'EFECTIVO':'现金','CASH':'现金','TARJETA':'银行卡','TARJETA DE DEBITO':'借记卡','TARJETA DE CREDITO':'信用卡','TRANSFERENCIA':'转账','CHEQUE':'支票','CREDITO':'赊账','DEBITO':'借记卡'}[normalizeLabel(v)]||('其他支付（'+v+'）'));
 
 async function all(q){let out=[],from=0;for(;;){const {data,error}=await q().range(from,from+999);if(error)throw error;out=out.concat(data);if(data.length<1000)return out;from+=1000}}
 
@@ -128,7 +130,7 @@ R.overview=async()=>{const el=$('#v-overview');const t=today();
   <div class="kpis" id="kp1"></div><h2>所选区间</h2><div class="kpis" id="kp2"></div>
   <div class="card"><b>每日净营业额</b> <span class="mute">（品红点为周末）</span><div class="fig" id="trend"></div></div>
   <div class="card"><b>每小时销售</b> <select id="hday"></select><div id="hours"></div></div>`;
-  const daily=await all(()=>sb.from('v_daily_full').select('*').order('day'));
+  const daily=await all(()=>sb.from('v_daily_full').select('day,invoices,gross_sales,returns_amount,returns_count,net_sales,net_sales_ex_tax,avg_ticket,units_sold,dow').order('day'));
   const by=Object.fromEntries(daily.map(d=>[d.day,d]));const S=k=>d=>num(d?.[k])||0;
   const sum=(a,b,k)=>daily.filter(d=>d.day>=a&&d.day<=b).reduce((s,d)=>s+S(k)(d),0);
   const mon=addD(t,-((new Date(t+'T12:00:00').getDay()+6)%7)),m1=t.slice(0,8)+'01',y=addD(t,-1),lw=addD(t,-7);
@@ -139,8 +141,7 @@ R.overview=async()=>{const el=$('#v-overview');const t=today();
     card('本周营业额',usd(sum(mon,t,'net_sales')),'自周一起'),card('本月营业额',usd(sum(m1,t,'net_sales')),''),
     card('累计营业额',usd(sum('2000-01-01',t,'net_sales')),`自 ${daily[0]?.day||'—'} 起`)].join('');
   const range=()=>{const a=$('#d1').value,b=$('#d2').value,rows=daily.filter(d=>d.day>=a&&d.day<=b);
-    const g=k=>rows.reduce((s,d)=>s+S(k)(d),0),inv=g('invoices'),gross=g('gross_sales'),ret=g('returns_amount'),ex=g('net_sales_ex_tax'),gp=g('gross_profit');
-    const est=rows.some(d=>d.profit_is_estimate);
+    const g=k=>rows.reduce((s,d)=>s+S(k)(d),0),inv=g('invoices'),gross=g('gross_sales'),ret=g('returns_amount'),ex=g('net_sales_ex_tax');
     $('#kp2').innerHTML=[card('净营业额',usd(g('net_sales')),`不含税 ${usd(ex)}`),card('交易笔数',int(inv),''),card('平均客单价',usd(inv?gross/inv:null),''),
       card('售出数量',int(g('units_sold'))+' 件',''),card('退货金额',usd(ret),`退货率 ${(gross?ret/gross*100:0).toFixed(2)}% · ${int(g('returns_count'))} 笔`)].join('');
     lineChart($('#trend'),rows.map(d=>({x:d.day,y:S('net_sales')(d),we:d.dow>=6})));
@@ -179,18 +180,19 @@ R.restock=async()=>{const el=$('#v-restock');
 
 // ---------- 4 收银效率 ----------
 R.caja=async()=>{const el=$('#v-caja');const t=today();
-  el.innerHTML=`<h1>收银效率</h1><p class="mute">"活跃小时"= 该收银台有交易的小时数。效率按每活跃小时笔数比较，不受开台时长影响；工作日与周末分开统计。</p>
+  el.innerHTML=`<h1>收银效率</h1><p class="mute">实体收银台按每活跃小时交易笔数比较，工作日与周末分开统计。老板及后台账号开单单独列示，不参与收银台效率比较。</p>
   <div class="bar"><label>开始<input type="date" id="c1" value="${addD(t,-13)}"></label><label>结束<input type="date" id="c2" value="${t}"></label></div><div class="card scroll" id="ct"></div><div class="card" id="cp"></div>`;
   const go=async()=>{const a=$('#c1').value,b=$('#c2').value;
+    if(a>b){$('#ct').innerHTML='<p class="err">开始日期不能晚于结束日期</p>';return}
     const rows=await all(()=>sb.from('v_caja_daily').select('*').gte('day',a).lte('day',b));
     const dows=Object.fromEntries((await all(()=>sb.from('v_daily_full').select('day,dow').gte('day',a).lte('day',b))).map(d=>[d.day,d.dow]));
-    const agg={};for(const r of rows){const w=dows[r.day]>=6?'周末':'工作日',k=r.caja+'|'+w,o=agg[k]??={caja:r.caja,w,days:0,inv:0,amt:0,ret:0,retAmt:0,hrs:0};
-      o.days++;o.inv+=r.invoices;o.amt+=num(r.gross_sales);o.ret+=r.returns_count;o.retAmt+=num(r.returns_amount);o.hrs+=r.active_hours}
-    const L=Object.values(agg).sort((x,y)=>x.w.localeCompare(y.w)||x.caja.localeCompare(y.caja,'en',{numeric:true}));
-    $('#ct').innerHTML=`<table><thead><tr><th>收银台</th><th>类型</th><th class="n">开台天数</th><th class="n">销售额</th><th class="n">笔数</th><th class="n">客单价</th><th class="n">每活跃小时笔数</th><th class="n">退货笔数</th><th class="n">退货金额</th></tr></thead><tbody>${
-      L.map(o=>`<tr><td>${esc(cajaName(o.caja))}</td><td>${o.w}</td><td class="n">${o.days}</td><td class="n">${usd(o.amt)}</td><td class="n">${int(o.inv)}</td><td class="n">${usd(o.inv?o.amt/o.inv:null)}</td><td class="n"><b>${(o.hrs?o.inv/o.hrs:0).toFixed(1)}</b></td><td class="n">${o.ret}</td><td class="n">${usd(o.retAmt)}</td></tr>`).join('')}</tbody></table>`;
+    const agg={};for(const r of rows){const w=dows[r.day]>=6?'周末':'工作日',register=isRegister(r.caja),label=cajaName(r.caja),k=label+'|'+w,o=agg[k]??={label,register,w,days:new Set(),inv:0,amt:0,ret:0,retAmt:0,hrs:0};
+      o.days.add(r.day);o.inv+=Number(r.invoices)||0;o.amt+=num(r.gross_sales)||0;o.ret+=Number(r.returns_count)||0;o.retAmt+=num(r.returns_amount)||0;o.hrs+=Number(r.active_hours)||0}
+    const L=Object.values(agg).sort((x,y)=>x.w.localeCompare(y.w)||x.label.localeCompare(y.label,'zh-CN',{numeric:true}));
+    const table=(items,physical)=>`<table><thead><tr><th>${physical?'收银台':'开单账号'}</th><th>日期类型</th><th class="n">${physical?'开台天数':'有单天数'}</th><th class="n">销售额</th><th class="n">交易笔数</th><th class="n">客单价</th>${physical?'<th class="n">每活跃小时笔数</th>':''}<th class="n">退货笔数</th><th class="n">退货金额</th></tr></thead><tbody>${items.map(o=>`<tr><td>${esc(o.label)}</td><td>${o.w}</td><td class="n">${o.days.size}</td><td class="n">${usd(o.amt)}</td><td class="n">${int(o.inv)}</td><td class="n">${usd(o.inv?o.amt/o.inv:null)}</td>${physical?`<td class="n"><b>${(o.hrs?o.inv/o.hrs:0).toFixed(1)}</b></td>`:''}<td class="n">${o.ret}</td><td class="n">${usd(o.retAmt)}</td></tr>`).join('')}</tbody></table>${items.length?'':'<p class="mute">所选日期暂无记录</p>'}`;
+    $('#ct').innerHTML='<h2>实体收银台</h2>'+table(L.filter(o=>o.register),true)+'<h2>老板及后台账号开单（单独统计）</h2>'+table(L.filter(o=>!o.register),false);
     const hrs=await all(()=>sb.from('v_hourly').select('hour,invoices,net_sales').gte('day',a).lte('day',b));const hm={};for(const h of hrs){hm[h.hour]=(hm[h.hour]||0)+h.invoices}
-    const nd=Object.keys(dows).length||1;$('#cp').innerHTML='<b>客流高峰（区间内每天平均交易笔数）</b>'+hbars(Object.keys(hm).sort((a,b)=>a-b).map(h=>({k:h+':00',v:hm[h]/nd})),v=>v.toFixed(1)+' 笔')};
+    const nd=Object.keys(dows).length||1;$('#cp').innerHTML='<b>全店交易高峰（含账号开单，按区间内每天平均交易笔数）</b>'+hbars(Object.keys(hm).sort((a,b)=>a-b).map(h=>({k:h+':00',v:hm[h]/nd})),v=>v.toFixed(1)+' 笔')};
   el.addEventListener('change',go);await go()};
 
 // ---------- 5 支付方式 ----------
@@ -207,14 +209,17 @@ R.pay=async()=>{const el=$('#v-pay');const t=today();
 // ---------- 6 异常监控 ----------
 R.anom=async()=>{const el=$('#v-anom');
   el.innerHTML=`<h1>异常监控</h1><p class="mute">以下均为根据系统数据推断的"疑似"问题，每条附判断依据，需要现场核实，不代表员工或供应商责任。</p><div class="card" id="as"></div><div class="bar"><label>类型<select id="ak"></select></label></div><div class="card scroll" id="at"></div>`;
-  const [rows,sync,daily]=await Promise.all([all(()=>sb.from('v_anomalies').select('*')),sb.from('sync_runs').select('*').order('id',{ascending:false}).limit(20),sb.from('v_daily_full').select('day,net_sales,dow').order('day',{ascending:false}).limit(15)]);
+  const [rows,sync,daily]=await Promise.all([all(()=>sb.from('v_anomalies').select('kind,code7,name,basis').eq('kind','同编码多名称')),sb.from('sync_runs').select('*').order('id',{ascending:false}).limit(20),sb.from('v_daily_full').select('day,net_sales,dow').order('day',{ascending:false}).limit(15)]);
+  const codes=[...new Set(rows.map(r=>r.code7))];
+  const productRows=codes.length?await all(()=>sb.from('products').select('code7,name_zh,name_es,name_sys').in('code7',codes)):[];
+  const productByCode=Object.fromEntries(productRows.map(p=>[p.code7,p]));
   const visibleRows=rows.filter(r=>!/(库存|售罄|断货|进价|售价|毛利|倍率|成本|未到货)/.test([r.kind,r.basis].join(' ')));
   const cnt={};for(const r of visibleRows)cnt[r.kind]=(cnt[r.kind]||0)+1;
   const fails=(sync.data||[]).filter(s=>s.ok===false),d=daily.data||[];const drop=d[1]&&d.slice(2).find(x=>x.dow===d[1].dow);
   const dropMsg=drop&&num(d[1].net_sales)<num(drop.net_sales)*0.7?`<div class="dn">销售突然下降：${esc(d[1].day)} 净营业额 ${usd(d[1].net_sales)}，比上周同日 ${usd(drop.net_sales)} 低 ${((1-d[1].net_sales/drop.net_sales)*100).toFixed(0)}%</div>`:'';
   $('#as').innerHTML=`<b>同步状态</b>：最近 20 次中失败 ${fails.length} 次${fails[0]?` · 最近失败：${esc(fails[0].started_at)} ${esc((fails[0].message||'').slice(0,160))}`:''}${dropMsg}`+hbars(Object.entries(cnt).sort((a,b)=>b[1]-a[1]).map(([k,v])=>({k,v})),v=>v+' 个');
   $('#ak').innerHTML=Object.keys(cnt).map(k=>`<option>${esc(k)}</option>`).join('');
-  const draw=()=>{const L=visibleRows.filter(r=>r.kind===$('#ak').value).slice(0,500);$('#at').innerHTML=`<table><thead><tr><th>编码</th><th>商品</th><th>判断依据</th></tr></thead><tbody>${L.map(r=>`<tr><td>${esc(r.code7)}</td><td>${esc(r.name)}</td><td>${esc(r.basis)}</td></tr>`).join('')}</tbody></table>${L.length===500?'<p class="mute">仅显示前 500 条</p>':''}`};
+  const draw=()=>{const L=visibleRows.filter(r=>r.kind===$('#ak').value).slice(0,500);$('#at').innerHTML=`<table><thead><tr><th>编码</th><th>商品</th><th>判断依据</th></tr></thead><tbody>${L.map(r=>`<tr><td>${esc(r.code7)}</td><td>${productName(productByCode[r.code7]||{name_zh:r.name})}</td><td>${esc(r.basis)}</td></tr>`).join('')}</tbody></table>${L.length===500?'<p class="mute">仅显示前 500 条</p>':''}`};
   el.addEventListener('change',draw);draw()};
 
 // ---------- 7 经营日报 ----------
@@ -227,8 +232,16 @@ R.report=async()=>{const el=$('#v-report');const {data}=await sb.from('daily_rep
   el.addEventListener('change',draw);draw()};
 
 // ---------- 登录与同步状态 ----------
-async function syncStatus(){const {data}=await sb.from('v_sync_status').select('*').single();
-  if(data)$('#sync').innerHTML=`最后成功更新：${data.last_success?esc(new Date(data.last_success).toLocaleString('zh-CN',{timeZone:tz})):'—'}${data.last_ok===false?' · <span style="color:#ff9b9b">最近一次同步失败</span>':''} · 每15分钟自动更新 · <a href="${RUN_URL}" style="color:inherit">手动刷新</a>`}
+async function syncStatus(){
+  const jobs=['intraday','daily','manual','backfill'];
+  const [success,latest,automatic]=await Promise.all([
+    sb.from('sync_runs').select('finished_at,job').in('job',jobs).eq('ok',true).order('id',{ascending:false}).limit(1),
+    sb.from('sync_runs').select('ok').in('job',jobs).order('id',{ascending:false}).limit(1),
+    sb.from('sync_runs').select('finished_at').in('job',jobs).eq('ok',true).like('message','[schedule]%').order('id',{ascending:false}).limit(1)]);
+  if(success.error||latest.error||automatic.error){$('#sync').textContent='同步状态暂时无法读取';return}
+  const fmt=d=>d?esc(new Date(d).toLocaleString('zh-CN',{timeZone:tz})):'尚无记录';
+  const auto=automatic.data?.[0]?.finished_at;
+  $('#sync').innerHTML=`销售数据更新：${fmt(success.data?.[0]?.finished_at)}${latest.data?.[0]?.ok===false?' · <span style="color:#ff9b9b">最近一次同步失败</span>':''} · ${auto?'最近自动同步：'+fmt(auto):'自动触发待验证'} · 计划每15分钟同步、每天08:00出日报 · <a href="${RUN_URL}" style="color:inherit">查看运行记录</a>`}
 async function start(){$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#out').classList.remove('hide');syncStatus();setInterval(syncStatus,300000);show(location.hash.slice(1))}
 $('#lf').addEventListener('submit',async e=>{e.preventDefault();$('#le').textContent='';const {error}=await sb.auth.signInWithPassword({email:$('#em').value.trim(),password:$('#pw').value});if(error)$('#le').textContent='登录失败：'+(error.message.includes('Invalid')?'邮箱或密码错误':error.message);else start()});
 $('#out').onclick=async()=>{await sb.auth.signOut();location.reload()};
