@@ -93,7 +93,7 @@ const tz='America/Guayaquil';
 const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:tz});
 const addD=(d,n)=>{const x=new Date(d+'T12:00:00');x.setDate(x.getDate()+n);return x.toISOString().slice(0,10)};
 const name=p=>[p.name_zh,p.name_es||p.name_sys].filter((v,i,a)=>v&&a.indexOf(v)===i).join(' / ');
-const productName=p=>`${p.name_zh?esc(p.name_zh):'<span class="mute">中文名称待补充</span>'}<div class="mute">${esc(p.name_es||p.name_sys||'')}</div>`;
+const productName=p=>`${p.name_zh?esc(p.name_zh):esc('商品 '+p.code7)}<div class="mute">${esc(p.name_es||p.name_sys||'')}</div>`;
 const cajaName=v=>String(v).replace(/^CAJA\s*(\d+)$/i,'收银台 $1');
 const paymentName=v=>({'EFECTIVO':'现金','CASH':'现金','TARJETA':'银行卡','TARJETA DE DEBITO':'借记卡','TARJETA DE CREDITO':'信用卡','TRANSFERENCIA':'转账','CHEQUE':'支票','CREDITO':'赊账','DEBITO':'借记卡'}[String(v).toUpperCase()]||v);
 
